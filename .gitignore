@@ -1,0 +1,12 @@
+# Local operating-system files
+.DS_Store
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Environment-specific configuration
+.env*
+
+# Runtime analysis output
+/runs/

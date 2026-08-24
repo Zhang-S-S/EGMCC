@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Live EGMCC multi-core network analysis and serial benchmark demo."><title>EGMCC · Live Network Analysis</title><link rel="stylesheet" href="styles.css"></head>
+<body>
+<header class="topbar">
+  <div class="brand-block"><a class="brand" href="#">EGMCC</a><span class="tagline">Multi-Core Network Analysis Engine</span></div>
+  <nav class="primary-nav"><button class="nav-link active" type="button" data-nav="analysis">Analysis</button><button class="nav-link" type="button" data-nav="benchmark">Benchmark</button><a class="nav-link" href="/EGMCC.pdf" target="_blank">Paper</a><a class="nav-link" href="https://github.com/Zhang-S-S/EGMCC" target="_blank">GitHub</a></nav>
+  <div class="system-state"><span class="cpu-live">CPU <strong id="headerCpu">—</strong></span><span class="signal-bars"><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="divider"></span><span id="systemDot" class="status-dot"></span><span id="systemLabel">Connecting</span></div>
+</header>
+<main class="workspace">
+<aside class="setup-panel card">
+  <h1>Analysis Setup</h1>
+  <label class="field-label" for="datasetSelect">Dataset</label><select id="datasetSelect" class="field-control" disabled></select>
+  <div class="dataset-stat"><span class="stat-icon">⌘</span><strong id="datasetNodes">—</strong> nodes</div><div class="dataset-stat"><span class="stat-icon">↗</span><strong id="datasetEdges">—</strong> edges</div>
+  <div class="tag-list"><span id="datasetDirected" class="tag">—</span><span id="datasetWeighted" class="tag">—</span></div>
+  <label class="field-label" for="algorithmSelect">Function</label><select id="algorithmSelect" class="field-control" disabled></select>
+  <label class="field-label" for="threadSelect">Threads</label><select id="threadSelect" class="field-control"><option>1</option><option>2</option><option>4</option><option>8</option><option>14</option><option>16</option><option>32</option><option selected>56</option></select>
+  <details id="advancedParameters" class="advanced-parameters"><summary>Advanced parameters</summary><div id="parameterFields" class="parameter-fields"><span class="parameter-empty">No parameters</span></div></details>
+  <label class="checkbox-row"><input id="metricsToggle" type="checkbox" checked><span>Collect resource metrics</span></label>
+  <label class="switch-row"><input id="benchmarkToggle" type="checkbox"><span class="switch-track"><span></span></span><span>Benchmark mode</span><button class="help-button" type="button" title="EGMCC, graph-tool, NetworKit, igraph, and NetworkX run strictly one after another.">?</button></label>
+  <div id="benchmarkOptions" class="benchmark-options" hidden><label class="field-label" for="benchmarkRuns">Timed runs per backend (paper: 30)</label><input id="benchmarkRuns" class="field-control" type="number" min="1" max="30" value="3"></div>
+  <button id="runButton" class="run-button" type="button" disabled><span class="play-icon"></span><span>Run Analysis</span></button>
+  <div class="mode-note"><strong>Live computation</strong><span>Analysis calls EGMCC directly. Benchmark backends run one by one in isolated subprocesses.</span></div>
+</aside>
+<section class="analysis-area">
+  <div class="summary-grid">
+    <article class="summary-card card"><span class="summary-label">Status</span><strong id="statusValue" class="summary-value success">Ready</strong><span id="statusDetail" class="summary-detail">Select a function</span></article>
+    <article class="summary-card card"><span class="summary-label">Runtime</span><strong id="runtimeValue" class="summary-value primary">—</strong><span id="runtimeDetail" class="summary-detail">Live worker time</span></article>
+    <article class="summary-card card"><span id="resultCountLabel" class="summary-label">Result Rows</span><strong id="rowCountValue" class="summary-value success">—</strong><span id="rowCountDetail" class="summary-detail">One value per node</span></article>
+    <article class="summary-card card"><span class="summary-label">Peak CPU</span><div class="metric-with-spark"><strong id="cpuValue" class="summary-value success">—</strong><canvas id="cpuSpark" width="110" height="38"></canvas></div><span class="summary-detail">Utilization of configured threads</span></article>
+    <article class="summary-card card"><span class="summary-label">Peak Memory</span><div class="metric-with-spark"><strong id="memoryValue" class="summary-value primary">—</strong><canvas id="memorySpark" width="110" height="38"></canvas></div><span class="summary-detail">Measured worker RSS</span></article>
+  </div>
+  <div id="runProgress" class="run-progress card" hidden><div class="progress-copy"><strong id="progressTitle">Queued</strong><span id="progressDetail">Waiting for worker</span></div><div class="progress-track"><span id="progressBar"></span></div></div>
+  <section id="resultsView" class="view-panel active" data-view="results">
+    <article class="results-card card">
+      <div class="section-heading"><div><h2>Results</h2><p id="resultProvenance">Run an analysis to compute results.</p></div><div class="download-actions"><button id="downloadCsv" class="outline-button" disabled><span>↓</span> Download CSV</button><button id="downloadJson" class="outline-button" disabled><span>↓</span> Download JSON</button></div></div>
+      <div id="scalarResult" class="scalar-result" hidden><span id="scalarLabel">Result</span><strong id="scalarValue">—</strong><p>Computed on the largest connected component.</p></div>
+      <div id="nodeResults"><div class="table-toolbar"><label class="search-box"><span></span><input id="nodeSearch" type="search" placeholder="Search node ID" disabled></label><span id="tableSummary" class="table-summary">No results loaded</span></div>
+      <div class="table-wrap"><table><thead><tr><th><button data-sort="rank">Rank <span>↕</span></button></th><th><button data-sort="node_id">Node ID <span>↕</span></button></th><th><button data-sort="value"><span id="resultValueHeader">Value</span> <span>↕</span></button></th></tr></thead><tbody id="resultsBody"><tr class="empty-row"><td colspan="3">Run the analysis to view node-level scores.</td></tr></tbody></table></div>
+      <div class="pagination"><span id="paginationText">0 results</span><div class="page-controls"><button id="prevPage" disabled>‹</button><span id="pageNumber">1</span><button id="nextPage" disabled>›</button></div></div></div>
+    </article>
+    <aside class="insight-column"><article class="insight-card card"><div class="card-title-row"><h2>Result Statistics</h2><span>Computed</span></div><h3>Score Distribution</h3><canvas id="histogramCanvas" class="chart-canvas" width="440" height="190"></canvas><dl id="statsList" class="stats-list"><div><dt>Min</dt><dd>—</dd></div><div><dt>Median</dt><dd>—</dd></div><div><dt>Mean</dt><dd>—</dd></div><div><dt>Max</dt><dd>—</dd></div><div><dt>Non-zero</dt><dd>—</dd></div></dl></article><article class="insight-card resource-card card"><div class="card-title-row"><h2>Resource Summary</h2><span>Live sampling</span></div><div class="chart-legend"><span class="cpu-legend">CPU · configured threads</span><span class="memory-legend">Memory</span></div><canvas id="resourceCanvas" class="chart-canvas" width="440" height="190"></canvas></article></aside>
+  </section>
+  <section id="statisticsView" class="view-panel card" data-view="statistics" hidden><div class="full-view-heading"><div><p class="eyebrow">Result Analytics</p><h2 id="statisticsTitle">Computed score distribution</h2></div><span class="source-badge">Live EGMCC result</span></div><div class="analytics-layout"><div class="large-chart"><canvas id="largeHistogram" width="920" height="390"></canvas></div><div id="percentileCards" class="percentile-cards"></div></div></section>
+  <section id="resourceView" class="view-panel card" data-view="resource" hidden><div class="full-view-heading"><div><p class="eyebrow">Resource Usage</p><h2>CPU and memory over the active subprocess</h2></div><span class="source-badge">Measured locally</span></div><canvas id="largeResourceCanvas" width="1260" height="430"></canvas></section>
+  <section id="benchmarkView" class="view-panel card" data-view="benchmark" hidden><div class="full-view-heading"><div><p class="eyebrow">Benchmark</p><h2 id="benchmarkTitle">Live serial runtime comparison</h2></div><span class="source-badge">Isolated subprocesses</span></div><div class="benchmark-layout"><canvas id="benchmarkCanvas" width="900" height="420"></canvas><div id="benchmarkTable" class="benchmark-table"><div class="benchmark-empty">Run benchmark mode to compare backends.</div></div></div></section>
+  <section id="logView" class="view-panel card" data-view="log" hidden><div class="full-view-heading"><div><p class="eyebrow">Run Log</p><h2>Analysis lifecycle</h2></div><button id="clearLog" class="outline-button">Clear log</button></div><ol id="logList" class="run-log"><li>No run has started.</li></ol></section>
+  <nav class="view-tabs card"><button class="tab-button active" data-view-target="results">Results</button><button class="tab-button" data-view-target="statistics">Statistics</button><button class="tab-button" data-view-target="resource">Resource Usage</button><button class="tab-button" data-view-target="benchmark">Benchmark</button><button class="tab-button" data-view-target="log">Run Log</button></nav>
+</section></main><div id="toast" class="toast" role="status"></div><script type="module" src="app.js"></script></body></html>
