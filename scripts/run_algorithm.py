@@ -17,16 +17,18 @@ import traceback
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from catalog import ALGORITHMS, DATASETS
+from uploaded_datasets import read_edge_list
 
 
 class UnsupportedAlgorithm(RuntimeError):
     pass
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", choices=["easygraph", "graph-tool", "networkit", "igraph", "networkx"], required=True)
-    parser.add_argument("--dataset", choices=DATASETS, required=True)
+    parser.add_argument("--dataset", required=True)
+    parser.add_argument("--dataset-config")
     parser.add_argument("--algorithm", choices=ALGORITHMS, required=True)
     parser.add_argument("--threads", type=int, default=56)
     parser.add_argument("--runs", type=int, default=1)
@@ -34,17 +36,37 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--params", default="{}")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--summary-only", action="store_true")
-    return parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def dataset_configuration(args: argparse.Namespace) -> dict:
+    if not args.dataset_config:
+        if args.dataset not in DATASETS:
+            raise ValueError("Unknown dataset.")
+        return DATASETS[args.dataset]
+    try:
+        config = json.loads(args.dataset_config)
+    except json.JSONDecodeError as error:
+        raise ValueError("Invalid dataset configuration.") from error
+    if not isinstance(config, dict) or config.get("id") != args.dataset:
+        raise ValueError("Dataset configuration does not match the requested dataset.")
+    required = {"path", "format", "header", "directed", "weighted"}
+    if not required.issubset(config):
+        raise ValueError("Dataset configuration is incomplete.")
+    config["path"] = Path(config["path"])
+    return config
 
 
 def parse_node(value: str) -> int:
     return int(float(value.strip()))
 
 
-def read_dataset(config: dict, weighted: bool) -> tuple[list[int], list[tuple[int, int, float | None]]]:
+def read_dataset(config: dict, weighted: bool) -> tuple[list[int | str], list[tuple[int | str, int | str, float | None]]]:
     path = Path(config["path"])
     if not path.exists():
         raise FileNotFoundError(path)
+    if config.get("uploaded"):
+        return read_edge_list(path, config["format"], bool(config.get("header")), weighted)
     edges: list[tuple[int, int, float | None]] = []
     nodes: set[int] = set()
 
@@ -409,7 +431,7 @@ def main() -> int:
         "algorithm": args.algorithm,
     }
     try:
-        dataset = DATASETS[args.dataset]
+        dataset = dataset_configuration(args)
         algorithm = ALGORITHMS[args.algorithm]
         raw_params = json.loads(args.params)
         params = normalized_params(raw_params, dataset)

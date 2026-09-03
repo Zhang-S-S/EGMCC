@@ -10,15 +10,32 @@
 <main class="workspace">
 <aside class="setup-panel card">
   <h1>Analysis Setup</h1>
-  <label class="field-label" for="datasetSelect">Dataset</label><select id="datasetSelect" class="field-control" disabled></select>
+  <div class="dataset-label-row"><label class="field-label" for="datasetSelect">Dataset</label><button id="uploadToggle" class="text-button" type="button" aria-expanded="false">Upload</button></div>
+  <select id="datasetSelect" class="field-control" disabled></select>
+  <form id="uploadPanel" class="upload-panel" hidden>
+    <label class="upload-file"><span>CSV or TXT edge list</span><input id="uploadFile" name="file" type="file" accept=".csv,.txt,text/csv,text/plain" required></label>
+    <label class="parameter-field"><span>Dataset name</span><input id="uploadName" class="field-control" name="name" type="text" maxlength="100" required></label>
+    <label class="parameter-field"><span>Graph direction</span><select id="uploadDirection" class="field-control"><option value="false">Undirected</option><option value="true">Directed</option></select></label>
+    <label class="upload-check"><input id="uploadHeader" type="checkbox"><span>First data row is a header</span></label>
+    <label class="upload-check"><input id="uploadWeighted" type="checkbox"><span>Use column 3 as edge weight</span></label>
+    <p class="upload-hint">Columns 1–2: source and target. UTF-8 only, up to 100 MB.</p>
+    <p id="uploadStatus" class="upload-status" role="status" aria-live="polite"></p>
+    <div class="upload-actions"><button id="uploadCancel" class="outline-button" type="button">Cancel</button><button id="uploadSubmit" class="upload-submit" type="submit">Upload dataset</button></div>
+  </form>
   <div class="dataset-stat"><span class="stat-icon">⌘</span><strong id="datasetNodes">—</strong> nodes</div><div class="dataset-stat"><span class="stat-icon">↗</span><strong id="datasetEdges">—</strong> edges</div>
-  <div class="tag-list"><span id="datasetDirected" class="tag">—</span><span id="datasetWeighted" class="tag">—</span></div>
+  <div class="tag-list"><span id="datasetDirected" class="tag">—</span><span id="datasetWeighted" class="tag">—</span><span id="datasetSource" class="tag uploaded-tag" hidden>Uploaded</span></div>
+  <p id="datasetExpiry" class="dataset-expiry" hidden></p>
   <label class="field-label" for="algorithmSelect">Function</label><select id="algorithmSelect" class="field-control" disabled></select>
   <label class="field-label" for="threadSelect">Threads</label><select id="threadSelect" class="field-control"><option>1</option><option>2</option><option>4</option><option>8</option><option>14</option><option>16</option><option>32</option><option selected>56</option></select>
   <details id="advancedParameters" class="advanced-parameters"><summary>Advanced parameters</summary><div id="parameterFields" class="parameter-fields"><span class="parameter-empty">No parameters</span></div></details>
   <label class="checkbox-row"><input id="metricsToggle" type="checkbox" checked><span>Collect resource metrics</span></label>
-  <label class="switch-row"><input id="benchmarkToggle" type="checkbox"><span class="switch-track"><span></span></span><span>Benchmark mode</span><button class="help-button" type="button" title="EGMCC, graph-tool, NetworKit, igraph, and NetworkX run strictly one after another.">?</button></label>
-  <div id="benchmarkOptions" class="benchmark-options" hidden><label class="field-label" for="benchmarkRuns">Timed runs per backend (paper: 30)</label><input id="benchmarkRuns" class="field-control" type="number" min="1" max="30" value="3"></div>
+  <label class="switch-row"><input id="benchmarkToggle" type="checkbox"><span class="switch-track"><span></span></span><span>Benchmark mode</span><button class="help-button" type="button" title="Selected libraries run strictly one after another in the displayed order.">?</button></label>
+  <div id="benchmarkOptions" class="benchmark-options" hidden>
+    <div class="benchmark-backend-heading"><span class="field-label">Libraries</span><span><button id="selectAllBackends" class="mini-text-button" type="button">All</button><button id="clearBackends" class="mini-text-button" type="button">None</button></span></div>
+    <div id="benchmarkBackends" class="benchmark-backends"></div>
+    <p id="benchmarkBackendStatus" class="benchmark-backend-status"></p>
+    <label class="field-label" for="benchmarkRuns">Timed runs per backend (paper: 30)</label><input id="benchmarkRuns" class="field-control" type="number" min="1" max="30" value="3">
+  </div>
   <button id="runButton" class="run-button" type="button" disabled><span class="play-icon"></span><span>Run Analysis</span></button>
   <div class="mode-note"><strong>Live computation</strong><span>Analysis calls EGMCC directly. Benchmark backends run one by one in isolated subprocesses.</span></div>
 </aside>

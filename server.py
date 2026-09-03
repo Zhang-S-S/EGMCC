@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import cgi
 import csv
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -12,27 +13,61 @@ import json
 import math
 import os
 from pathlib import Path
+import posixpath
 import statistics
 import subprocess
 import sys
 import threading
 import time
 import uuid
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from catalog import ALGORITHMS, BACKENDS, DATASETS, public_catalog
+from uploaded_datasets import (
+    DatasetFormatError,
+    MAX_UPLOAD_BYTES,
+    UploadedDatasetStore,
+    UploadTooLargeError,
+    UploadValidationError,
+)
 
 
 ROOT = Path(__file__).resolve().parent
 RUNS_DIR = ROOT / "runs"
+UPLOADS_DIR = ROOT / "uploads"
 BACKEND_IDS = [backend["id"] for backend in BACKENDS]
 BACKEND_LABELS = {backend["id"]: backend["label"] for backend in BACKENDS}
 JOBS: dict[str, dict] = {}
 JOBS_LOCK = threading.RLock()
+UPLOAD_STORE = UploadedDatasetStore(UPLOADS_DIR)
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def active_uploaded_dataset_ids() -> set[str]:
+    with JOBS_LOCK:
+        return {
+            job["config"]["dataset"]
+            for job in JOBS.values()
+            if job["status"] in {"queued", "running"}
+            and job["config"]["dataset"].startswith("upload-")
+        }
+
+
+def catalog_payload() -> dict:
+    payload = public_catalog()
+    built_in = [{**dataset, "source": "built-in"} for dataset in payload["datasets"]]
+    payload["datasets"] = built_in + UPLOAD_STORE.list_public(active_uploaded_dataset_ids())
+    return payload
+
+
+def resolve_dataset(dataset_id: str) -> dict | None:
+    if dataset_id in DATASETS:
+        return {**DATASETS[dataset_id], "uploaded": False, "node_type": "integer"}
+    UPLOAD_STORE.cleanup(active_uploaded_dataset_ids())
+    return UPLOAD_STORE.resolve(dataset_id)
 
 
 def finite(value) -> float | None:
@@ -214,11 +249,16 @@ def sample_process(
 def worker_command(job: dict, backend: str, output_path: Path) -> list[str]:
     config = job["config"]
     benchmark = config["mode"] == "benchmark"
+    dataset_config = {
+        key: str(value) if isinstance(value, Path) else value
+        for key, value in job["dataset_config"].items()
+    }
     command = [
         sys.executable,
         str(ROOT / "scripts" / "run_algorithm.py"),
         "--backend", backend,
         "--dataset", config["dataset"],
+        "--dataset-config", json.dumps(dataset_config, separators=(",", ":")),
         "--algorithm", config["algorithm"],
         "--threads", str(config["threads"]),
         "--runs", str(config["benchmark_runs"] if benchmark else 1),
@@ -278,7 +318,7 @@ def execute_job(job_id: str) -> None:
         job["status"] = "running"
         job["started_at"] = utc_now()
     config = job["config"]
-    backends = BACKEND_IDS if config["mode"] == "benchmark" else ["easygraph"]
+    backends = config["backends"]
 
     try:
         for position, backend in enumerate(backends, start=1):
@@ -333,10 +373,20 @@ def create_job(body: dict) -> tuple[dict | None, str | None]:
     algorithm = body.get("algorithm")
     if mode not in {"analysis", "benchmark"}:
         return None, "mode must be 'analysis' or 'benchmark'."
-    if dataset not in DATASETS:
+    dataset_config = resolve_dataset(dataset) if isinstance(dataset, str) else None
+    if dataset_config is None:
         return None, "Unknown dataset."
     if algorithm not in ALGORITHMS:
         return None, "Unknown algorithm."
+    if mode == "benchmark":
+        requested_backends = body.get("backends", BACKEND_IDS)
+        if not isinstance(requested_backends, list) or not requested_backends:
+            return None, "Select at least one benchmark backend."
+        if any(not isinstance(backend, str) or backend not in BACKEND_IDS for backend in requested_backends):
+            return None, "Unknown benchmark backend."
+        selected_backends = [backend for backend in BACKEND_IDS if backend in requested_backends]
+    else:
+        selected_backends = ["easygraph"]
     try:
         threads = max(1, min(256, int(body.get("threads", 56))))
         benchmark_runs = max(1, min(30, int(body.get("benchmark_runs", 3))))
@@ -345,7 +395,7 @@ def create_job(body: dict) -> tuple[dict | None, str | None]:
     params = body.get("params") or {}
     if not isinstance(params, dict):
         return None, "params must be an object."
-    if params.get("weight_mode") == "weighted" and not DATASETS[dataset].get("weighted"):
+    if params.get("weight_mode") == "weighted" and not dataset_config.get("weighted"):
         return None, "The selected dataset does not provide edge weights."
 
     with JOBS_LOCK:
@@ -366,7 +416,7 @@ def create_job(body: dict) -> tuple[dict | None, str | None]:
             "current_backend": None,
             "current_backend_label": None,
             "backend_index": 0,
-            "backend_total": len(BACKEND_IDS) if mode == "benchmark" else 1,
+            "backend_total": len(selected_backends),
             "peak_cpu": 0,
             "peak_memory_mb": 0,
             "metrics": [],
@@ -375,12 +425,14 @@ def create_job(body: dict) -> tuple[dict | None, str | None]:
             "scalar_result": None,
             "statistics": {},
             "error": None,
+            "dataset_config": dataset_config,
             "config": {
                 "mode": mode,
                 "dataset": dataset,
                 "algorithm": algorithm,
                 "threads": threads,
                 "benchmark_runs": benchmark_runs,
+                "backends": selected_backends,
                 "collect_metrics": bool(body.get("collect_metrics", True)),
                 "params": params,
             },
@@ -414,6 +466,29 @@ class DemoHandler(SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stdout.write(f"[{self.log_date_time_string()}] {fmt % args}\n")
 
+    def end_headers(self):
+        path = urlparse(self.path).path
+        if path in {"/", "/index.html", "/app.js", "/styles.css"}:
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+        super().end_headers()
+
+    def is_private_static_path(self) -> bool:
+        encoded_path = urlparse(self.path).path
+        try:
+            decoded_path = unquote(encoded_path, errors="surrogatepass")
+        except UnicodeDecodeError:
+            decoded_path = unquote(encoded_path)
+        normalized_parts = [part.casefold() for part in posixpath.normpath(decoded_path).split("/") if part]
+        if normalized_parts and normalized_parts[0] in {"runs", "uploads"}:
+            return True
+
+        requested_path = Path(self.translate_path(self.path)).resolve()
+        return any(
+            requested_path == private_root or private_root in requested_path.parents
+            for private_root in (RUNS_DIR.resolve(), UPLOADS_DIR.resolve())
+        )
+
     def send_json(self, payload, status=HTTPStatus.OK):
         encoded = json.dumps(payload, allow_nan=False).encode("utf-8")
         self.send_response(status)
@@ -439,8 +514,71 @@ class DemoHandler(SimpleHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError):
             return None
 
+    @staticmethod
+    def multipart_boolean(form, name: str) -> bool:
+        value = form.getfirst(name)
+        if value not in {"true", "false"}:
+            raise UploadValidationError(f"{name} must be true or false.")
+        return value == "true"
+
+    def handle_dataset_upload(self):
+        content_type = self.headers.get("Content-Type", "")
+        if not content_type.lower().startswith("multipart/form-data"):
+            self.send_json({"error": "Expected multipart/form-data."}, HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.send_json({"error": "Invalid Content-Length."}, HTTPStatus.BAD_REQUEST)
+            return
+        if content_length <= 0:
+            self.send_json({"error": "Upload body is empty."}, HTTPStatus.BAD_REQUEST)
+            return
+        if content_length > MAX_UPLOAD_BYTES + 1024 * 1024:
+            self.send_json({"error": "File exceeds the 100 MB limit."}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
+
+        try:
+            form = cgi.FieldStorage(
+                fp=self.rfile,
+                headers=self.headers,
+                environ={
+                    "REQUEST_METHOD": "POST",
+                    "CONTENT_TYPE": content_type,
+                    "CONTENT_LENGTH": str(content_length),
+                },
+                keep_blank_values=True,
+            )
+            if "file" not in form:
+                raise UploadValidationError("A CSV or TXT file is required.")
+            file_item = form["file"]
+            if isinstance(file_item, list) or not file_item.filename or file_item.file is None:
+                raise UploadValidationError("Exactly one CSV or TXT file is required.")
+            dataset = UPLOAD_STORE.create(
+                file_item.file,
+                filename=file_item.filename,
+                name=form.getfirst("name", ""),
+                directed=self.multipart_boolean(form, "directed"),
+                header=self.multipart_boolean(form, "header"),
+                weighted=self.multipart_boolean(form, "weighted"),
+            )
+        except UploadTooLargeError as error:
+            self.send_json({"error": str(error)}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
+        except (DatasetFormatError, UploadValidationError) as error:
+            self.send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
+            return
+        except (OSError, ValueError) as error:
+            self.log_error("Dataset upload failed: %s", error)
+            self.send_json({"error": "Unable to store the uploaded dataset."}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        self.send_json(dataset, HTTPStatus.CREATED)
+
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/api/datasets/upload":
+            self.handle_dataset_upload()
+            return
         if path != "/api/runs":
             self.send_error(HTTPStatus.NOT_FOUND)
             return
@@ -455,6 +593,12 @@ class DemoHandler(SimpleHTTPRequestHandler):
             return
         self.send_json(public_job(job), HTTPStatus.ACCEPTED)
 
+    def do_HEAD(self):
+        if self.is_private_static_path():
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        super().do_HEAD()
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
@@ -465,7 +609,7 @@ class DemoHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             return
         if path == "/api/catalog":
-            self.send_json(public_catalog())
+            self.send_json(catalog_payload())
             return
         if path == "/api/health":
             with JOBS_LOCK:
@@ -473,7 +617,7 @@ class DemoHandler(SimpleHTTPRequestHandler):
             self.send_json({"status": "ready", "active_job": active})
             return
         if not path.startswith("/api/runs/"):
-            if path.startswith("/runs/"):
+            if self.is_private_static_path():
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             super().do_GET()

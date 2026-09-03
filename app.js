@@ -2,6 +2,7 @@ const PAGE_SIZE = 10;
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const integer = new Intl.NumberFormat("en-US");
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 const state = {
   catalog: null,
@@ -50,7 +51,12 @@ function addLog(message) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, { cache: "no-store", ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
+  const isMultipart = options.body instanceof FormData;
+  const response = await fetch(path, {
+    cache: "no-store",
+    ...options,
+    headers: { ...(!isMultipart ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) },
+  });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
   return payload;
@@ -64,9 +70,39 @@ function selectedAlgorithm() {
   return state.catalog?.algorithms.find((item) => item.id === $("#algorithmSelect").value);
 }
 
+function renderDatasetOptions(selectedId) {
+  $("#datasetSelect").innerHTML = state.catalog.datasets.map((item) => {
+    const suffix = item.source === "uploaded" ? " · Uploaded" : "";
+    return `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label + suffix)}</option>`;
+  }).join("");
+  if (selectedId) $("#datasetSelect").value = selectedId;
+}
+
+function selectedBenchmarkBackends() {
+  return $$('#benchmarkBackends input[type="checkbox"]:checked').map((input) => input.value);
+}
+
+function updateBenchmarkBackendStatus() {
+  const selected = selectedBenchmarkBackends().length;
+  const total = state.catalog?.backends.length || 0;
+  const status = $("#benchmarkBackendStatus");
+  status.textContent = selected ? `${selected} of ${total} libraries selected` : "Select at least one library";
+  status.classList.toggle("error", selected === 0);
+}
+
+function renderBenchmarkBackendOptions(backends) {
+  $("#benchmarkBackends").innerHTML = backends.map((backend) => `
+    <label class="benchmark-backend-option">
+      <input type="checkbox" value="${escapeHtml(backend.id)}" checked>
+      <span>${escapeHtml(backend.label)}</span>
+    </label>`).join("");
+  updateBenchmarkBackendStatus();
+}
+
 function populateCatalog(catalog) {
   state.catalog = catalog;
-  $("#datasetSelect").innerHTML = catalog.datasets.map((item) => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("");
+  renderDatasetOptions(catalog.defaults?.dataset);
+  renderBenchmarkBackendOptions(catalog.backends);
   const groups = new Map();
   catalog.algorithms.forEach((item) => {
     if (!groups.has(item.family)) groups.set(item.family, []);
@@ -74,7 +110,6 @@ function populateCatalog(catalog) {
   });
   $("#algorithmSelect").innerHTML = [...groups].map(([family, algorithms]) => `<optgroup label="${escapeHtml(family)}">${algorithms.map((item) => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("")}</optgroup>`).join("");
   const defaults = catalog.defaults || {};
-  if (defaults.dataset) $("#datasetSelect").value = defaults.dataset;
   if (defaults.algorithm) $("#algorithmSelect").value = defaults.algorithm;
   if (defaults.threads) $("#threadSelect").value = String(defaults.threads);
   $("#datasetSelect").disabled = false;
@@ -91,7 +126,58 @@ function updateDataset() {
   $("#datasetEdges").textContent = integer.format(dataset.edges);
   $("#datasetDirected").textContent = dataset.directed ? "Directed" : "Undirected";
   $("#datasetWeighted").textContent = dataset.weighted ? "Weighted data" : "Unweighted";
+  const uploaded = dataset.source === "uploaded";
+  $("#datasetSource").hidden = !uploaded;
+  $("#datasetExpiry").hidden = !uploaded;
+  $("#datasetExpiry").textContent = uploaded
+    ? `Available until ${new Date(dataset.expires_at).toLocaleString()}`
+    : "";
   renderParameterFields();
+}
+
+function toggleUploadPanel(open) {
+  $("#uploadPanel").hidden = !open;
+  $("#uploadToggle").setAttribute("aria-expanded", String(open));
+  if (open) $("#uploadFile").focus();
+}
+
+function setUploadStatus(message, kind = "") {
+  const status = $("#uploadStatus");
+  status.textContent = message;
+  status.className = `upload-status ${kind}`.trim();
+}
+
+async function uploadDataset(event) {
+  event.preventDefault();
+  const file = $("#uploadFile").files[0];
+  if (!file) return setUploadStatus("Choose a CSV or TXT file.", "error");
+  if (!/\.(csv|txt)$/i.test(file.name)) return setUploadStatus("Only CSV and TXT files are supported.", "error");
+  if (file.size > MAX_UPLOAD_BYTES) return setUploadStatus("File exceeds the 100 MB limit.", "error");
+  const name = $("#uploadName").value.trim();
+  if (!name) return setUploadStatus("Enter a dataset name.", "error");
+
+  const form = new FormData();
+  form.append("file", file);
+  form.append("name", name);
+  form.append("directed", $("#uploadDirection").value);
+  form.append("header", String($("#uploadHeader").checked));
+  form.append("weighted", String($("#uploadWeighted").checked));
+  $("#uploadSubmit").disabled = true;
+  setUploadStatus("Uploading and validating…", "pending");
+  try {
+    const dataset = await api("/api/datasets/upload", { method: "POST", body: form });
+    state.catalog.datasets.push(dataset);
+    renderDatasetOptions(dataset.id);
+    updateDataset();
+    $("#uploadPanel").reset();
+    setUploadStatus("");
+    toggleUploadPanel(false);
+    showToast(`${dataset.label} is ready to run.`);
+  } catch (error) {
+    setUploadStatus(error.message, "error");
+  } finally {
+    $("#uploadSubmit").disabled = false;
+  }
 }
 
 function updateAlgorithm() {
@@ -145,6 +231,13 @@ function resetResultPanels() {
 
 async function startRun() {
   if (state.running) return;
+  const benchmark = $("#benchmarkToggle").checked;
+  const benchmarkBackends = selectedBenchmarkBackends();
+  if (benchmark && !benchmarkBackends.length) {
+    updateBenchmarkBackendStatus();
+    showToast("Select at least one benchmark library.");
+    return;
+  }
   state.running = true;
   state.lastStage = "";
   state.page = 1;
@@ -155,17 +248,17 @@ async function startRun() {
   $("#statusValue").style.color = "";
   $("#runProgress").hidden = false;
   resetResultPanels();
-  const benchmark = $("#benchmarkToggle").checked;
   const body = {
     mode: benchmark ? "benchmark" : "analysis",
     dataset: $("#datasetSelect").value,
     algorithm: $("#algorithmSelect").value,
     threads: Number($("#threadSelect").value),
     benchmark_runs: Number($("#benchmarkRuns").value),
+    backends: benchmarkBackends,
     collect_metrics: $("#metricsToggle").checked,
     params: collectParameters(),
   };
-  addLog(`Submitted · mode=${body.mode} · dataset=${body.dataset} · function=${body.algorithm}`);
+  addLog(`Submitted · mode=${body.mode} · dataset=${body.dataset} · function=${body.algorithm}${benchmark ? ` · backends=${body.backends.join(",")}` : ""}`);
   try {
     state.job = await api("/api/runs", { method: "POST", body: JSON.stringify(body) });
     await pollJob();
@@ -226,9 +319,10 @@ async function finishRun(job) {
   addLog(job.message);
 
   if (job.config.mode === "benchmark") {
-    const easygraph = job.benchmark_results.find((item) => item.backend === "easygraph" && item.status === "completed");
-    $("#runtimeValue").textContent = easygraph ? formatRuntime(easygraph.runtime_seconds) : "—";
-    $("#runtimeDetail").textContent = "EGMCC mean runtime";
+    const reference = job.benchmark_results.find((item) => item.backend === "easygraph" && item.status === "completed")
+      || job.benchmark_results.find((item) => item.status === "completed");
+    $("#runtimeValue").textContent = reference ? formatRuntime(reference.runtime_seconds) : "—";
+    $("#runtimeDetail").textContent = reference ? `${reference.backend_label} mean runtime` : "No backend completed";
     $("#rowCountValue").textContent = String(job.benchmark_results.length);
     $("#resultProvenance").textContent = "Benchmark mode stores timing summaries; run Analysis mode for downloadable node results.";
     switchView("benchmark");
@@ -410,8 +504,26 @@ function download(extension) {
 
 function bindEvents() {
   $("#datasetSelect").addEventListener("change", updateDataset);
+  $("#uploadToggle").addEventListener("click", () => toggleUploadPanel($("#uploadPanel").hidden));
+  $("#uploadCancel").addEventListener("click", () => { setUploadStatus(""); toggleUploadPanel(false); });
+  $("#uploadFile").addEventListener("change", (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    $("#uploadName").value = file.name.replace(/\.(csv|txt)$/i, "");
+    setUploadStatus("");
+  });
+  $("#uploadPanel").addEventListener("submit", uploadDataset);
   $("#algorithmSelect").addEventListener("change", updateAlgorithm);
   $("#runButton").addEventListener("click", startRun);
+  $("#benchmarkBackends").addEventListener("change", updateBenchmarkBackendStatus);
+  $("#selectAllBackends").addEventListener("click", () => {
+    $$('#benchmarkBackends input[type="checkbox"]').forEach((input) => { input.checked = true; });
+    updateBenchmarkBackendStatus();
+  });
+  $("#clearBackends").addEventListener("click", () => {
+    $$('#benchmarkBackends input[type="checkbox"]').forEach((input) => { input.checked = false; });
+    updateBenchmarkBackendStatus();
+  });
   $("#benchmarkToggle").addEventListener("change", (event) => {
     $("#benchmarkOptions").hidden = !event.target.checked;
     $("#runButton span:last-child").textContent = event.target.checked ? "Run Benchmark" : "Run Analysis";
