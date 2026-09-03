@@ -35,8 +35,10 @@ python server.py
 
 Then open <http://127.0.0.1:4173>.
 
-The thread count defaults to 56 (matching the paper's Enron case study) and
-can be adjusted in the front end; the server accepts values from 1 to 256.
+At startup, the server detects the logical CPUs available to it. The thread
+count defaults to that maximum, and the interface offers common values plus a
+**Use max** button. Requests above the detected limit are automatically capped
+by both the front end and server.
 
 ### Interface tabs
 

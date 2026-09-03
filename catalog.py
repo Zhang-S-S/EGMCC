@@ -11,7 +11,6 @@ ROOT = Path(__file__).resolve().parent
 PAPER_CASE_STUDY = {
     "dataset": "enron",
     "algorithm": "betweenness",
-    "threads": 56,
 }
 
 

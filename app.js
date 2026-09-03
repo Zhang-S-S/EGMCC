@@ -3,6 +3,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const integer = new Intl.NumberFormat("en-US");
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+const COMMON_THREAD_COUNTS = [1, 2, 4, 8, 14, 16, 32, 56];
 
 const state = {
   catalog: null,
@@ -111,12 +112,25 @@ function populateCatalog(catalog) {
   $("#algorithmSelect").innerHTML = [...groups].map(([family, algorithms]) => `<optgroup label="${escapeHtml(family)}">${algorithms.map((item) => `<option value="${item.id}">${escapeHtml(item.label)}</option>`).join("")}</optgroup>`).join("");
   const defaults = catalog.defaults || {};
   if (defaults.algorithm) $("#algorithmSelect").value = defaults.algorithm;
-  if (defaults.threads) $("#threadSelect").value = String(defaults.threads);
+  configureThreadInput(catalog.max_threads, defaults.threads);
   $("#datasetSelect").disabled = false;
   $("#algorithmSelect").disabled = false;
   $("#runButton").disabled = false;
   updateDataset();
   updateAlgorithm();
+}
+
+function configureThreadInput(maxThreads, defaultThreads) {
+  const maximum = Math.max(1, Number(maxThreads) || 1);
+  const threadInput = $("#threadSelect");
+  threadInput.max = String(maximum);
+  threadInput.value = String(Math.min(maximum, Math.max(1, Number(defaultThreads) || maximum)));
+  const suggestions = [...new Set([...COMMON_THREAD_COUNTS.filter((value) => value <= maximum), maximum])].sort((left, right) => left - right);
+  $("#threadSuggestions").innerHTML = suggestions.map((value) => `<option value="${value}"></option>`).join("");
+  $("#threadHint").textContent = `This machine supports up to ${integer.format(maximum)} logical threads. Values above this limit use the maximum automatically.`;
+  const maxButton = $("#threadMaxButton");
+  maxButton.textContent = `Use max (${integer.format(maximum)})`;
+  maxButton.disabled = false;
 }
 
 function updateDataset() {
@@ -231,6 +245,19 @@ function resetResultPanels() {
 
 async function startRun() {
   if (state.running) return;
+  const threadInput = $("#threadSelect");
+  const requestedThreads = threadInput.valueAsNumber;
+  const maxThreads = Math.max(1, Number(state.catalog?.max_threads) || Number(threadInput.max) || 1);
+  if (!Number.isInteger(requestedThreads) || requestedThreads < 1) {
+    showToast("Enter a whole-number thread count of at least 1.");
+    threadInput.focus();
+    return;
+  }
+  const threads = Math.min(requestedThreads, maxThreads);
+  if (requestedThreads > maxThreads) {
+    threadInput.value = String(maxThreads);
+    showToast(`This machine supports up to ${integer.format(maxThreads)} threads; using that maximum.`);
+  }
   const benchmark = $("#benchmarkToggle").checked;
   const benchmarkBackends = selectedBenchmarkBackends();
   if (benchmark && !benchmarkBackends.length) {
@@ -252,7 +279,7 @@ async function startRun() {
     mode: benchmark ? "benchmark" : "analysis",
     dataset: $("#datasetSelect").value,
     algorithm: $("#algorithmSelect").value,
-    threads: Number($("#threadSelect").value),
+    threads,
     benchmark_runs: Number($("#benchmarkRuns").value),
     backends: benchmarkBackends,
     collect_metrics: $("#metricsToggle").checked,
@@ -514,6 +541,10 @@ function bindEvents() {
   });
   $("#uploadPanel").addEventListener("submit", uploadDataset);
   $("#algorithmSelect").addEventListener("change", updateAlgorithm);
+  $("#threadMaxButton").addEventListener("click", () => {
+    const maxThreads = Math.max(1, Number(state.catalog?.max_threads) || 1);
+    $("#threadSelect").value = String(maxThreads);
+  });
   $("#runButton").addEventListener("click", startRun);
   $("#benchmarkBackends").addEventListener("change", updateBenchmarkBackendStatus);
   $("#selectAllBackends").addEventListener("click", () => {
