@@ -35,6 +35,21 @@ from uploaded_datasets import (
 ROOT = Path(__file__).resolve().parent
 RUNS_DIR = ROOT / "runs"
 UPLOADS_DIR = ROOT / "uploads"
+
+
+def detect_max_threads() -> int:
+    """Return the logical CPUs available to this server process."""
+    process_cpu_count = getattr(os, "process_cpu_count", None)
+    try:
+        count = process_cpu_count() if callable(process_cpu_count) else None
+    except OSError:
+        count = None
+    if not count:
+        count = os.cpu_count()
+    return max(1, count or 1)
+
+
+MAX_THREADS = detect_max_threads()
 BACKEND_IDS = [backend["id"] for backend in BACKENDS]
 BACKEND_LABELS = {backend["id"]: backend["label"] for backend in BACKENDS}
 JOBS: dict[str, dict] = {}
@@ -58,6 +73,8 @@ def active_uploaded_dataset_ids() -> set[str]:
 
 def catalog_payload() -> dict:
     payload = public_catalog()
+    payload["defaults"] = {**payload["defaults"], "threads": MAX_THREADS}
+    payload["max_threads"] = MAX_THREADS
     built_in = [{**dataset, "source": "built-in"} for dataset in payload["datasets"]]
     payload["datasets"] = built_in + UPLOAD_STORE.list_public(active_uploaded_dataset_ids())
     return payload
@@ -388,7 +405,7 @@ def create_job(body: dict) -> tuple[dict | None, str | None]:
     else:
         selected_backends = ["easygraph"]
     try:
-        threads = max(1, min(256, int(body.get("threads", 56))))
+        threads = max(1, min(MAX_THREADS, int(body.get("threads", MAX_THREADS))))
         benchmark_runs = max(1, min(30, int(body.get("benchmark_runs", 3))))
     except (TypeError, ValueError):
         return None, "threads and benchmark_runs must be integers."
